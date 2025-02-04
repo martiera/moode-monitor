@@ -1,0 +1,12 @@
+# MQTT Broker Configuration
+mqtt_server: 192.168.00.00
+mqtt_port: 1883
+mqtt_username: username
+mqtt_password: password
+
+# MQTT Topics
+source_topic: moode/audio/source
+details_topic: moode/audio/details
+
+# Optional additional configuration
+debug: false
