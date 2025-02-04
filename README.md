@@ -53,7 +53,8 @@ sudo ./install.sh
 
 ## Usage
 
-The service will automatically start and monitor the audio playback state. It will publish the current audio source and details to the configured MQTT topics.
+The service will automatically start and monitor the audio playback state. It will publish the current audio source and details to the configured MQTT topics. The service logs its output to `/var/log/moode_monitor.log`.
+
 
 ## MQTT Topics
 

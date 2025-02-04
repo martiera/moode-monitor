@@ -25,6 +25,7 @@ fi
 REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="moode_monitor"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+LOG_FILE="/var/log/${SERVICE_NAME}.log"
 
 # Create the systemd service file
 echo "Creating systemd service file at ${SERVICE_FILE}..."
@@ -35,7 +36,7 @@ Description=Moode Monitor Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 ${REPO_PATH}/moode_monitor.py
+ExecStart=/usr/bin/python3 ${REPO_PATH}/moode_monitor.py >> ${LOG_FILE} 2>&1
 WorkingDirectory=${REPO_PATH}
 Restart=always
 RestartSec=5
