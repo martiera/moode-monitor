@@ -8,6 +8,7 @@ import paho.mqtt.client as mqtt
 
 # Configuration file
 CONFIG_PATH = 'moode_config.yaml'
+config = {}
 
 class MQTTHandler:
     def __init__(self, config):
@@ -18,6 +19,8 @@ class MQTTHandler:
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_connect = self.on_connect
         self.client.on_publish = self.on_publish
+        self.client.on_message = self.on_message
+        self.client.on_subscribe = self.on_subscribe
         
         # Add authentication if required
         username = config.get('mqtt_username')
@@ -35,45 +38,35 @@ class MQTTHandler:
         except Exception as e:
             print(f"MQTT Connection Error: {e}")
 
-    def on_connect(self, client, userdata, flags, rc, properties=None):
-        """Connection callback"""
-        try:
-            # Extract the actual return code as an integer
-            #rc_value = int(rc)
-            rc_value = rc.value if hasattr(rc, 'value') else rc
-            
-            connection_messages = {
-                0: "Connected to MQTT Broker successfully",
-                1: "Connection refused - incorrect protocol version",
-                2: "Connection refused - invalid client identifier",
-                3: "Connection refused - server unavailable",
-                4: "Connection refused - bad username or password",
-                5: "Connection refused - not authorized"
-            }
-            
-            message = connection_messages.get(rc_value, f"Unknown connection error: {rc_value}")
-            print(message)
-            
-            self.connected = (rc_value == 0)
-            return self.connected
-        except Exception as e:
-            print(f"Error in on_connect handler: {e}")
-            return False
+    def on_connect(self, client, userdata, flags, reason_code, properties=None):
+        if reason_code.is_failure:
+            debug_print(f"Failed to connect: {reason_code}. Will retry connection...")
+        else:
+            self.client.subscribe(self.config.get('command_topic'))
 
     def on_publish(self, client, userdata, mid, rc=None, properties=None):
         """Publish status callback (optional)"""
         pass
+    
+    def on_message(self, client, userdata, message):
+        """Message status callback (optional)"""
+        pass
+
+    def on_subscribe(self, client, userdata, mid, reason_code_list, properties):
+        if reason_code_list[0].is_failure:
+            debug_print(f"Broker rejected you subscription: {reason_code_list[0]}")
+        else:
+            debug_print(f"Broker granted the following QoS: {reason_code_list[0].value}")
 
     def publish_state(self, source_topic, source, details_topic, details):
         """Publish audio state to MQTT topics"""
         try:
             # Publish source
-            self.client.publish(source_topic, str(source), qos=1, retain=True)
-            
+            self.client.publish(source_topic, str(source), qos=1, retain=False)
             # Publish details
-            self.client.publish(details_topic, str(details), qos=1, retain=True)
+            self.client.publish(details_topic, str(details), qos=1, retain=False)
         except Exception as e:
-            print(f"MQTT Publish Error: {e}")
+            debug_print(f"MQTT Publish Error: {e}")
 
 def load_config():
     """Load configuration from YAML file"""
@@ -81,10 +74,10 @@ def load_config():
         with open(CONFIG_PATH, 'r') as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"Config file not found at {CONFIG_PATH}. Using default settings.")
+        debug_print(f"Config file not found at {CONFIG_PATH}. Using default settings.")
         return {}
     except yaml.YAMLError as e:
-        print(f"Error parsing config file: {e}")
+        debug_print(f"Error parsing config file: {e}")
         return {}
 
 class AudioState:
@@ -152,7 +145,7 @@ def get_spotify_status():
                         return pending_song
                         
     except Exception as e:
-        return "Unknown song"
+        return None
     return None
 
 def get_airplay_device():
@@ -168,10 +161,44 @@ def get_airplay_device():
     except Exception as e:
         return "Unknown device"
 
+def format_radio_name(url):
+    url = url.split('/')[2].split(':')[0]
+    # Replace dot with spaces
+    url = url.replace('.', ' ')
+    # Remove keywords = live, stream
+    url = re.sub(r'\b(live|stream)\b', '', url)
+    # Convert to upper case
+    url = url.upper()
+    return url
+
+def format_radio_details(details):
+    # With regex remove positive or negative number after last star. Examles: "LINK * 1002264", "SPOT * 100% Grandi Successi * -1"
+    details = re.sub(r'\s*\*\s*[-+]?\d+$', '', details)
+    return details
+
 def get_radio_info():
-    """Get radio stream information"""
-    # Implement based on how Moode stores radio stream info
-    return "Radio stream info not implemented"
+    try:
+        result = subprocess.run(['mpc', 'status'], capture_output=True, text=True)
+        output = result.stdout.strip().split('\n')
+
+        if len(output) < 2:
+            return None, None
+
+        if output[0].startswith('http'):
+            source = format_radio_name(output[0])
+            details = None
+        elif len(output[0].split(':87')) > 1:
+            source = output[0].split(':')[0]
+            details = format_radio_details(output[0].split(':')[1].strip())
+        else:
+            source_result = subprocess.run(['mpc', 'current', '--format', '%file%'], capture_output=True, text=True)
+            source_output = source_result.stdout.strip()
+            source = format_radio_name(source_output) if source_output.startswith('http') else None
+            details = format_radio_details(output[0])
+        return source, details
+    except Exception as e:
+        debug_print(f"Error getting radio info: {e}")
+        return "Music", None
 
 def get_current_state():
     """Get the current audio state"""
@@ -195,17 +222,27 @@ def get_current_state():
         state.current_source = "AirPlay"
         state.current_details = get_airplay_device()
     elif 'mpd' in cmdline:
-        state.current_source = "Radio"
-        state.current_details = get_radio_info()
+        state.current_source, state.current_details = get_radio_info()
     else:
         state.current_source = "Unknown"
         state.current_details = f"PID: {pid}"
 
     return state
 
+def debug_print(message):
+    global config
+    if config.get('debug', False):
+        print(message)
+
+def mpc_maintenance():
+    result = subprocess.run(['mpc', 'update'], capture_output=True, text=True)
+
 def main():
     # Load configuration
+    global config
     config = load_config()
+    
+    mpc_maintenance()
     
     # Initialize MQTT Handler
     mqtt_handler = MQTTHandler(config)
@@ -227,9 +264,9 @@ def main():
                 if config.get('source_topic') and config.get('details_topic'):
                     mqtt_handler.publish_state(
                         config['source_topic'], 
-                        current_state.current_source,
+                        current_state.current_source if current_state.current_source else "",
                         config['details_topic'], 
-                        current_state.current_details
+                        current_state.current_details if current_state.current_details else ""
                     )
                 
                 previous_state = current_state
