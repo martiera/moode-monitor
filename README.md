@@ -51,10 +51,11 @@ debug: false
 sudo ./install.sh
 ```
 
-5. Usage
+## Usage
+
 The service will automatically start and monitor the audio playback state. It will publish the current audio source and details to the configured MQTT topics.
 
-6. MQTT Topics
+## MQTT Topics
 
 - `moode/audio/source`: The current audio source (e.g., Spotify, AirPlay, Radio).
 - `moode/audio/details`: The current audio details (e.g., song title, artist).
