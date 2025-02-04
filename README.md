@@ -1,6 +1,6 @@
 # Moode Monitor
 
-Moode Monitor is a Python-based service that monitors audio playback on a Moode Audio system and publishes the current audio state to an MQTT broker. This allows integration with home automation systems like Home Assistant to display the current audio source and details (e.g., song title).
+Moode Monitor is a Python-based service that monitors audio playback on a [Moode Audio Player](https://moodeaudio.org/) and publishes the current audio state to an MQTT broker. This allows integration with home automation systems like Home Assistant to display the current audio source and details (e.g., song title).
 
 ## Features
 
