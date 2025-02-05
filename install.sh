@@ -36,11 +36,13 @@ Description=Moode Monitor Service
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 ${REPO_PATH}/moode_monitor.py >> ${LOG_FILE} 2>&1
+ExecStart=/usr/bin/python3 ${REPO_PATH}/moode_monitor.py
 WorkingDirectory=${REPO_PATH}
 Restart=always
 RestartSec=5
 User=$(whoami)
+StandardOutput=append:${LOG_FILE}
+StandardError=append:${LOG_FILE}
 
 [Install]
 WantedBy=multi-user.target

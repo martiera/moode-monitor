@@ -336,7 +336,7 @@ def main():
     # Initialize MQTT Handler
     mqtt_handler = MQTTHandler(config)
     
-    print("Monitoring audio playback state...")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting to monitor audio playback state")
     previous_state = AudioState()
     
     while True:
@@ -352,9 +352,9 @@ def main():
                     
                     # Confirm the state change after the delay
                     if rechecked_state != previous_state:
-                        print("\n" + "="*50)
-                        print(rechecked_state)
-                        print("="*50)
+                        debug_print("\n" + "="*50)
+                        debug_print(rechecked_state)
+                        debug_print("="*50)
                         
                         # Publish to MQTT if topics are configured
                         if config.get('source_topic') and config.get('details_topic'):
