@@ -77,9 +77,15 @@ mqtt:
 
 Here are some example screenshots from Home Assistant of the Moode Monitor in action:
 
+### Radio stream
+
 ![Moode Monitor Radio Stream](screenshots/radio-stream.png)
 
+### AirPlay
+
 ![Moode Monitor AirPlay](screenshots/airplay.png)
+
+### Spotify
 
 ![Moode Monitor Spotify](screenshots/spotify.png)
 
