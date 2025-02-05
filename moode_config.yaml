@@ -7,6 +7,10 @@ mqtt_password: password
 # MQTT Topics
 source_topic: moode/audio/source
 details_topic: moode/audio/details
+command_topic: moode/audio/command
 
-# Optional additional configuration
+# Additional configuration
 debug: false
+max_lines_librespot: 100
+max_lines_airplay: 30
+logfile_max_age_seconds: 5
