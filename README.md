@@ -73,6 +73,16 @@ mqtt:
       state_topic: "moode/audio/details"
 ```
 
+## Example Screenshots
+
+Here are some example screenshots from Home Assistant of the Moode Monitor in action:
+
+![Moode Monitor Radio Stream](screenshots/radio-stream.png)
+
+![Moode Monitor AirPlay](screenshots/airplay.png)
+
+![Moode Monitor Spotify](screenshots/spotify.png)
+
 ## Development and Testing
 
 This project was developed and tested on Moode Audio Release 8.3.9 (32-bit Bullseye).
