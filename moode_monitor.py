@@ -162,7 +162,10 @@ def get_airplay_device():
         return "Unknown device"
 
 def format_radio_name(url):
+    # Remove port number if present
     url = url.split('/')[2].split(':')[0]
+    # Remove domain extensions
+    url = re.sub(r'\.\w{2,3}$', '', url)
     # Replace dot with spaces
     url = url.replace('.', ' ')
     # Remove keywords = live, stream
@@ -187,7 +190,7 @@ def get_radio_info():
         if output[0].startswith('http'):
             source = format_radio_name(output[0])
             details = None
-        elif len(output[0].split(':87')) > 1:
+        elif len(output[0].split(':')) > 1:
             source = output[0].split(':')[0]
             details = format_radio_details(output[0].split(':')[1].strip())
         else:
@@ -272,7 +275,7 @@ def main():
                 previous_state = current_state
             
             # Wait before checking again
-            time.sleep(1)
+            time.sleep(2)
             
         except KeyboardInterrupt:
             print("\nMonitoring stopped.")
