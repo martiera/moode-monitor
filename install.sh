@@ -26,9 +26,10 @@ fi
 
 # Get the directory where the script is located
 REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="moode_monitor"
+SERVICE_NAME="moode-monitor"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-LOG_FILE="/var/log/${SERVICE_NAME}.log"
+LOG_NAME="moode_monitor"
+LOG_FILE="/var/log/${LOG_NAME}.log"
 VENV_PATH="${REPO_PATH}/.venv"
 
 # Check if the virtual environment already exists
@@ -49,9 +50,12 @@ echo "Creating systemd service file at ${SERVICE_FILE}..."
 cat > ${SERVICE_FILE} <<EOL
 [Unit]
 Description=Moode Monitor Service
-After=network.target
+After=network.target mpd.service
+Requires=mpd.service
 
 [Service]
+TimeoutStartSec=300
+ExecStartPre=/bin/bash -c 'until systemctl is-active --quiet mpd.service; do sleep 1; done'
 ExecStart=${VENV_PATH}/bin/python ${REPO_PATH}/moode_monitor.py
 WorkingDirectory=${REPO_PATH}
 Restart=always

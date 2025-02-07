@@ -153,7 +153,7 @@ def get_card_status():
                     if pid_match:
                         return pid_match.group(1)
     except Exception as e:
-        print(f"Error reading card status: {e}")
+        debug_print(f"Error reading card status: {e}")
     return None
 
 def get_process_cmdline(pid):
@@ -240,7 +240,7 @@ def get_radio_info():
     """Get current radio station info"""
     try:
         # First check if MPD is actually playing
-        status_result = subprocess.run(['mpc', 'status'], capture_output=True, text=True)
+        status_result = subprocess.run(['mpc', 'status'], capture_output=True, text=True, timeout=10)
         status_output = status_result.stdout.strip().split('\n')
         
         # Check if it's actually playing
@@ -268,6 +268,8 @@ def get_radio_info():
         if source and source.strip():
             log_cache.set('radio_info', (source, details))
         return source, details
+    except subprocess.TimeoutExpired:
+        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] GET_RADIO_INFO timed out")
     except Exception as e:
         debug_print(f"Error getting radio info: {e}")
         return None, None
@@ -280,7 +282,12 @@ def debug_print(message):
 
 def mpc_maintenance():
     """Perform maintenance tasks for MPD"""
-    result = subprocess.run(['mpc', 'update'], capture_output=True, text=True)
+    try:
+        result = subprocess.run(['mpc', 'update'], capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MPC_MAINTENANCE timed out")
+    except Exception as e:
+        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MPC_MAINTENANCE error: {e}")
 
 def get_current_state():
     """Get the current audio state"""
@@ -371,11 +378,11 @@ def main():
             time.sleep(1)
             
         except KeyboardInterrupt:
-            print("\nMonitoring stopped.")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitoring stopped.")
             observer.stop()
             break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error: {e}")
             time.sleep(1)
     
     observer.join()
