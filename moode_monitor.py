@@ -1,9 +1,12 @@
 import subprocess
+import sys
 import re
 from pathlib import Path
 import glob
 import time
 import yaml
+import logging
+import logging.handlers
 import paho.mqtt.client as mqtt
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -35,18 +38,24 @@ class LogCache:
 
 class LogWatcher(FileSystemEventHandler):
     """Watch for changes in log files and trigger updates"""
+    WATCHED_FILES = [
+        '/var/log/moode_librespot.log',
+        '/var/log/moode_shairport-sync.log'
+    ]
+    
     def __init__(self, callback):
         self.callback = callback
-        self.last_modified = {}
         
     def on_modified(self, event):
-        if event.src_path in ['/var/log/moode_librespot.log', '/var/log/moode_shairport-sync.log']:
-            self.callback()
+        for watched in self.WATCHED_FILES:
+            if event.src_path == watched:
+                self.callback()
 
 class MQTTHandler:
     def __init__(self, config):
         """Initialize MQTT client"""
         self.config = config
+        self.connected = False
         
         # MQTT Configuration
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -54,6 +63,7 @@ class MQTTHandler:
         self.client.on_publish = self.on_publish
         self.client.on_message = self.on_message
         self.client.on_subscribe = self.on_subscribe
+        self.client.on_disconnect = self.on_disconnect
         
         # Add authentication if required
         username = config.get('mqtt_username')
@@ -61,22 +71,34 @@ class MQTTHandler:
         if username and password:
             self.client.username_pw_set(username, password)
         
-        # Connect to MQTT broker
-        try:
-            self.client.connect(
-                config.get('mqtt_server', 'localhost'), 
-                config.get('mqtt_port', 1883)
-            )
-            self.client.loop_start()
-        except Exception as e:
-            debug_print(f"MQTT Connection Error: {e}")
+        self.handle_connection()
+    
+    def handle_connection(self):
+        # When not connected, try to reconnect
+        if not self.connected:
+            try:
+                self.client.connect(
+                    config.get('mqtt_server', 'localhost'), 
+                    config.get('mqtt_port', 1883)
+                )
+                self.client.loop_start()
+                logging.debug("MQTT Connection Established")
+            except Exception as e:
+                logging.warning(f"MQTT Connection Error: {e}")
 
     def on_connect(self, client, userdata, flags, reason_code, properties=None):
         """Connection callback to verify successful connection"""
         if reason_code.is_failure:
-            debug_print(f"Failed to connect: {reason_code}. Will retry connection...")
+            self.connected = False
+            logging.warning(f"Failed to connect: {reason_code}. Will retry connection...")
         else:
+            self.connected = True
             self.client.subscribe(self.config.get('command_topic'))
+
+    def on_disconnect(self, client, userdata, rc, properties=None):
+        """Disconnection callback"""
+        logging.warning("Disconnected from MQTT broker")
+        self.connected = False
 
     def on_publish(self, client, userdata, mid, rc=None, properties=None):
         """Publish status callback (optional)"""
@@ -89,9 +111,9 @@ class MQTTHandler:
     def on_subscribe(self, client, userdata, mid, reason_code_list, properties):
         """Subscribe status callback"""
         if reason_code_list[0].is_failure:
-            debug_print(f"Broker rejected you subscription: {reason_code_list[0]}")
+            logging.warning(f"Broker rejected you subscription: {reason_code_list[0]}")
         else:
-            debug_print(f"Broker granted the following QoS: {reason_code_list[0].value}")
+            logging.debug(f"Broker granted the following QoS: {reason_code_list[0].value}")
 
     def publish_state(self, source_topic, source, details_topic, details):
         """Publish audio state to MQTT topics"""
@@ -101,19 +123,7 @@ class MQTTHandler:
             # Publish details
             self.client.publish(details_topic, str(details), qos=1, retain=False)
         except Exception as e:
-            debug_print(f"MQTT Publish Error: {e}")
-
-def load_config():
-    """Load configuration from YAML file"""
-    try:
-        with open(CONFIG_PATH, 'r') as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        debug_print(f"Config file not found at {CONFIG_PATH}. Using default settings.")
-        return {}
-    except yaml.YAMLError as e:
-        debug_print(f"Error parsing config file: {e}")
-        return {}
+            logging.error(f"MQTT Publish Error: {e}")
 
 class AudioState:
     """Class to track and compare audio playback states"""
@@ -139,7 +149,47 @@ class AudioState:
         """String representation of the audio state"""
         if not self.current_source:
             return "No active playback"
-        return f"Source: {self.current_source}\nDetails: {self.current_details}"
+        return f"Source: {self.current_source} Details: {self.current_details}"
+
+def load_config():
+    """Load configuration from YAML file"""
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logging.debug(f"Config file not found at {CONFIG_PATH}. Using default settings.")
+        return {}
+    except yaml.YAMLError as e:
+        logging.error(f"Error parsing config file: {e}")
+        return {}
+
+def setup_logging(config):
+    """Setup logging configuration"""
+    log_file = '/var/log/moode_monitor.log'
+    formatter = logging.Formatter(
+        '[%(asctime)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Configure the root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG if config.get('debug', False) else logging.INFO)
+    
+    # Remove any existing handlers
+    root_logger.handlers = []
+    
+    # Add new handler with filter
+    handler = logging.handlers.WatchedFileHandler(log_file)
+    handler.setFormatter(formatter)
+    
+    # Add filter to exclude watchdog events
+    class WatchdogFilter(logging.Filter):
+        def filter(self, record):
+            # Filter out watchdog's "in-event" messages
+            return not record.getMessage().startswith('in-event')
+    
+    handler.addFilter(WatchdogFilter())
+    root_logger.addHandler(handler)
 
 def get_card_status():
     """Get the audio card status from proc filesystem"""
@@ -153,7 +203,7 @@ def get_card_status():
                     if pid_match:
                         return pid_match.group(1)
     except Exception as e:
-        debug_print(f"Error reading card status: {e}")
+        logging.error(f"Error reading card status: {e}")
     return None
 
 def get_process_cmdline(pid):
@@ -269,25 +319,21 @@ def get_radio_info():
             log_cache.set('radio_info', (source, details))
         return source, details
     except subprocess.TimeoutExpired:
-        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] GET_RADIO_INFO timed out")
+        logging.debug("GET_RADIO_INFO timed out")
     except Exception as e:
-        debug_print(f"Error getting radio info: {e}")
+        logging.debug(f"Error getting radio info: {e}")
         return None, None
-
-def debug_print(message):
-    """Print debug messages if debug mode is enabled"""
-    global config
-    if config.get('debug', False):
-        print(message)
 
 def mpc_maintenance():
     """Perform maintenance tasks for MPD"""
     try:
         result = subprocess.run(['mpc', 'update'], capture_output=True, text=True, timeout=10)
+        mpc_result = result.stdout.replace('\n', '').strip()
+        logging.debug(f"MPD Update: {mpc_result}")
     except subprocess.TimeoutExpired:
-        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MPC_MAINTENANCE timed out")
+        logging.debug("MPC_MAINTENANCE timed out")
     except Exception as e:
-        print("[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MPC_MAINTENANCE error: {e}")
+        logging.debug(f"MPC_MAINTENANCE error: {e}")
 
 def get_current_state():
     """Get the current audio state"""
@@ -324,26 +370,62 @@ def get_current_state():
     state.last_update = datetime.now()
     return state
 
+def wait_for_mpd():
+    """Wait for MPD to be fully operational"""
+    logging.debug("Waiting for MPD to be ready...")
+    max_retries = 30
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            result = subprocess.run(['mpc', 'status'], 
+                                 capture_output=True, 
+                                 text=True, 
+                                 timeout=10)
+            if result.returncode == 0:
+                logging.debug("MPD is ready")
+                return True
+        except Exception as e:
+            logging.debug(f"MPD not ready: {e}")
+        
+        retry_count += 1
+        time.sleep(1)
+    
+    return False
+
 def main():
     """Main program loop"""
     # Load configuration
     global config
     config = load_config()
+
+    # Setup logging
+    setup_logging(config)
+    
+    logging.debug("Configuration loaded")
+    
     
     # Initialize cache and watchdog
     global log_cache
     log_cache = LogCache(max_age_seconds=config.get('log_cache_max_age', 5))
     observer = Observer()
     handler = LogWatcher(lambda: log_cache.cache.clear())
-    observer.schedule(handler, '/var/log/', recursive=False)
+    # Watch specific log files instead of whole directory
+    for log_file in LogWatcher.WATCHED_FILES:
+        if Path(log_file).exists():
+            observer.schedule(handler, Path(log_file).parent, recursive=False)
     observer.start()
+    logging.debug("Log watcher started")
     
+    # Wait for MPD to be ready
     mpc_maintenance()
+    if not wait_for_mpd():
+        logging.warning("Failed to detect working MPD")
     
     # Initialize MQTT Handler
     mqtt_handler = MQTTHandler(config)
     
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting to monitor audio playback state")
+    logging.info("Starting to monitor audio playback state")
     previous_state = AudioState()
     
     while True:
@@ -359,12 +441,13 @@ def main():
                     
                     # Confirm the state change after the delay
                     if rechecked_state != previous_state:
-                        debug_print("\n" + "="*50)
-                        debug_print(rechecked_state)
-                        debug_print("="*50)
+                        logging.debug("="*50)
+                        logging.debug(rechecked_state)
+                        logging.debug("="*50)
                         
                         # Publish to MQTT if topics are configured
                         if config.get('source_topic') and config.get('details_topic'):
+                            mqtt_handler.handle_connection()
                             mqtt_handler.publish_state(
                                 config['source_topic'], 
                                 rechecked_state.current_source if rechecked_state.current_source else "",
@@ -378,11 +461,11 @@ def main():
             time.sleep(1)
             
         except KeyboardInterrupt:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitoring stopped.")
+            logging.info("Monitoring stopped.")
             observer.stop()
             break
         except Exception as e:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error: {e}")
+            logging.error("Error: {e}")
             time.sleep(1)
     
     observer.join()
