@@ -12,6 +12,10 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from collections import deque
 from datetime import datetime, timedelta
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+from rapidfuzz import fuzz
+import unicodedata
 
 # Configuration file
 CONFIG_PATH = 'moode_config.yaml'
@@ -115,15 +119,96 @@ class MQTTHandler:
         else:
             logging.debug(f"Broker granted the following QoS: {reason_code_list[0].value}")
 
-    def publish_state(self, source_topic, source, details_topic, details):
-        """Publish audio state to MQTT topics"""
+    def publish_moode(self, source, details):
+        """Publish moode audio state to MQTT topics"""
         try:
             # Publish source
-            self.client.publish(source_topic, str(source), qos=1, retain=False)
+            self.client.publish(self.config.get('source_topic'), str(source), qos=1, retain=False)
             # Publish details
-            self.client.publish(details_topic, str(details), qos=1, retain=False)
+            self.client.publish(self.config.get('details_topic'), str(details), qos=1, retain=False)
         except Exception as e:
             logging.error(f"MQTT Publish Error: {e}")
+            
+    def publish_spotify(self, track_info):
+        """Publish Spotify track info to MQTT topics"""
+        try:
+            # Publish track information
+            self.client.publish(self.config.get('track_topic'), str(track_info), qos=1, retain=False)
+        except Exception as e:
+            logging.error(f"MQTT Publish Error: {e}")
+            
+class SpotifyClient:
+    """ Spotify client for fetching song details """
+    def __init__(self, config):
+        self.client_id = config.get('spotify_client_id')
+        self.client_secret = config.get('spotify_client_secret')
+        self.client = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+            client_id=self.client_id, client_secret=self.client_secret))
+
+    def is_valid_details(self, query):
+        # Reject strings that are too short or too numeric
+        if len(query) < 6:
+            return False
+        tokens = re.findall(r'\w+', query)
+        if tokens:
+            numeric_ratio = sum(token.isdigit() for token in tokens) / len(tokens)
+            if numeric_ratio > 0.5:
+                return False
+        return True
+
+    def search_track(self, query, source):
+        """ Search for a track on Spotify """
+        if not self.is_valid_details(query):
+            return {"track_name": query, "artists": source, "album_image": ""}
+        try:
+            result = self.client.search(q=query, limit=1, type='track')
+            track_info = self.format_track_message(result)
+            if self.validate_spotify_result(query, track_info):
+                return track_info
+            # Build track_info from source if Spotify search fails
+            if source:
+                return {"track_name": query, "artists": source, "album_image": ""}
+            return None
+        except Exception as e:
+            logging.error(f"Error searching track: {e}")
+
+    def format_track_message(self, track_result):
+        """Extract track details from search result as a dictionary"""
+        track_info = {}
+        if track_result.get('tracks', {}).get('items'):
+            track = track_result['tracks']['items'][0]
+            track_info = {
+                "track_name": track.get('name', ''),
+                "artists": ", ".join(artist.get('name', '') for artist in track.get('artists', [])),
+                "album_image": next(
+                    (img.get('url') for img in track.get('album', {}).get('images', []) if img.get('height') == 300),
+                    track.get('album', {}).get('images', [{}])[0].get('url', '')
+                )
+            }
+        return track_info
+
+    def normalize_text(self, text):
+        # Normalize Unicode text by stripping accents and converting to lowercase
+        normalized = unicodedata.normalize('NFKD', text)
+        return normalized.encode('ascii', 'ignore').decode('ascii').lower()
+
+    def validate_spotify_result(self, query, spotify_result, threshold=70):
+        """Validates the Spotify result using fuzzy matching"""
+        # Ensure spotify_result is a dictionary
+        if not isinstance(spotify_result, dict):
+            return False
+        # Combine track name and artists in one string for fuzzy matching
+        spotify_str = f"{spotify_result.get('track_name', '')} {spotify_result.get('artists', '')}"
+
+        # Normalize both query and spotify string to address UTF issues
+        norm_query = self.normalize_text(query)
+        norm_spotify_str = self.normalize_text(spotify_str)
+        logging.debug(f"Normalized query: {norm_query}")
+        logging.debug(f"Normalized Spotify string: {norm_spotify_str}")
+        
+        score = fuzz.token_set_ratio(norm_query, norm_spotify_str)
+        logging.debug(f"Fuzzy score: {score}")
+        return score >= threshold
 
 class AudioState:
     """Class to track and compare audio playback states"""
@@ -190,6 +275,11 @@ def setup_logging(config):
     
     handler.addFilter(WatchdogFilter())
     root_logger.addHandler(handler)
+    
+    # Suppress Spotipy and requests debug logs
+    logging.getLogger('spotipy').setLevel(logging.WARNING)
+    logging.getLogger('requests').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 def get_card_status():
     """Get the audio card status from proc filesystem"""
@@ -275,6 +365,8 @@ def format_radio_name(url):
     url = url.replace('.', ' ')
     # Remove keywords = live, stream
     url = re.sub(r'\b(live|stream)\b', '', url)
+    # Remove whitespace
+    url = url.strip()
     # Convert to upper case
     url = url.upper()
     return url
@@ -425,6 +517,9 @@ def main():
     # Initialize MQTT Handler
     mqtt_handler = MQTTHandler(config)
     
+    # Initialize Spotify client
+    spotify_handler = SpotifyClient(config)
+    
     logging.info("Starting to monitor audio playback state")
     previous_state = AudioState()
     
@@ -445,15 +540,15 @@ def main():
                         logging.debug(rechecked_state)
                         logging.debug("="*50)
                         
-                        # Publish to MQTT if topics are configured
-                        if config.get('source_topic') and config.get('details_topic'):
-                            mqtt_handler.handle_connection()
-                            mqtt_handler.publish_state(
-                                config['source_topic'], 
-                                rechecked_state.current_source if rechecked_state.current_source else "",
-                                config['details_topic'], 
-                                rechecked_state.current_details if rechecked_state.current_details else ""
-                            )
+                        mqtt_handler.handle_connection()
+                        mqtt_handler.publish_moode(
+                            rechecked_state.current_source if rechecked_state.current_source else "",
+                            rechecked_state.current_details if rechecked_state.current_details else ""
+                        )
+                        if rechecked_state.current_details:
+                            spotify_track = spotify_handler.search_track(rechecked_state.current_details, rechecked_state.current_source)
+                            logging.debug(f"Spotify track: {spotify_track}")
+                            mqtt_handler.publish_spotify(spotify_track)
                         
                         previous_state = rechecked_state
             
@@ -465,7 +560,7 @@ def main():
             observer.stop()
             break
         except Exception as e:
-            logging.error("Error: {e}")
+            logging.error(f"Error: {e}")
             time.sleep(1)
     
     observer.join()
