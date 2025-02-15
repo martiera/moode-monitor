@@ -4,9 +4,14 @@ mqtt_port: 1883
 mqtt_username: username
 mqtt_password: password
 
+# Spotify Configuration
+spotify_client_id: your_spotify_client_id
+spotify_client_secret: your_spotify_client_secret
+
 # MQTT Topics
 source_topic: moode/audio/source
 details_topic: moode/audio/details
+track_topic: moode/audio/track
 command_topic: moode/audio/command
 
 # Additional configuration
